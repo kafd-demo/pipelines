@@ -1,0 +1,298 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  creationTimestamp: "2023-10-11T04:38:01Z"
+  generation: 8
+  name: kafd-maven-pipeline
+  namespace: kafd-ci
+  resourceVersion: "241034"
+  uid: 898d9fdb-0e3a-4a61-88cf-fdb40ac5396f
+spec:
+  finally:
+  - name: send-mail
+    params:
+    - name: server
+      value: smtp-server
+    - name: subject
+      value: Pipeline $(context.pipeline.name) run $(context.pipelineRun.name)) has
+        $(tasks.status)
+    - name: body
+      value: Pipeline has ended
+    - name: sender
+      value: Openshift Pipelines <piplines@openshift.cluster-jwlx2.jwlx2.sandbox2284.opentlc.com>
+    - name: recipients
+      value: Developer<developer@kafd-demo.com>
+    taskRef:
+      kind: Task
+      name: sendmail
+  params:
+  - default: backend
+    name: APP_NAME
+    type: string
+  - default: git@github.com:kafd-demo/backend-application.git
+    name: GIT_REPO
+    type: string
+  - name: GIT_REVISION
+    type: string
+  - default: image-registry.openshift-image-registry.svc:5000/demo-application-dev/backend
+    name: IMAGE_NAME
+    type: string
+  - default: .
+    name: PATH_CONTEXT
+    type: string
+  - name: GIT_BRANCH
+    type: string
+  - name: GIT_REV_SHORT
+    type: string
+  - default: git@github.com:kafd-demo/backend-application-gitops.git
+    name: GITOPS_REPO
+    type: string
+  tasks:
+  - name: fetch-repository
+    params:
+    - name: url
+      value: git@github.com:kafd-demo/backend-application.git
+    - name: revision
+      value: $(params.GIT_REVISION)
+    - name: subdirectory
+      value: ""
+    - name: deleteExisting
+      value: "true"
+    taskRef:
+      kind: ClusterTask
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: workspace
+  - name: image-build
+    params:
+    - name: IMAGE
+      value: quay.io/fmwalker/kafd-backend:$(params.GIT_REV_SHORT)
+    - name: TLSVERIFY
+      value: "false"
+    - name: CONTEXT
+      value: .
+    - name: DOCKERFILE
+      value: ./src/main/docker/Dockerfile.legacy-jar
+    runAfter:
+    - sonarqube-scanner
+    taskRef:
+      kind: ClusterTask
+      name: buildah
+    workspaces:
+    - name: source
+      workspace: workspace
+    - name: dockerconfig
+      workspace: quay-auth
+  - name: maven-test
+    params:
+    - name: MAVEN_IMAGE
+      value: registry.redhat.io/ubi8/openjdk-17@sha256:923b18a62d892ec23b6bbf714ecb237a0a0fa3cd225fbf89d39966dd8d421c72
+    - name: GOALS
+      value:
+      - test
+    - name: MAVEN_MIRROR_URL
+      value: ""
+    - name: SERVER_USER
+      value: ""
+    - name: SERVER_PASSWORD
+      value: ""
+    - name: PROXY_USER
+      value: ""
+    - name: PROXY_PASSWORD
+      value: ""
+    - name: PROXY_PORT
+      value: ""
+    - name: PROXY_HOST
+      value: ""
+    - name: PROXY_NON_PROXY_HOSTS
+      value: ""
+    - name: PROXY_PROTOCOL
+      value: http
+    - name: CONTEXT_DIR
+      value: .
+    runAfter:
+    - software-composition-analysis
+    taskRef:
+      kind: ClusterTask
+      name: maven
+    workspaces:
+    - name: source
+      workspace: workspace
+    - name: maven-settings
+      workspace: maven-settings
+  - name: maven-build
+    params:
+    - name: MAVEN_IMAGE
+      value: registry.redhat.io/ubi8/openjdk-17@sha256:923b18a62d892ec23b6bbf714ecb237a0a0fa3cd225fbf89d39966dd8d421c72
+    - name: GOALS
+      value:
+      - package
+    - name: MAVEN_MIRROR_URL
+      value: ""
+    - name: SERVER_USER
+      value: ""
+    - name: SERVER_PASSWORD
+      value: ""
+    - name: PROXY_USER
+      value: ""
+    - name: PROXY_PASSWORD
+      value: ""
+    - name: PROXY_PORT
+      value: ""
+    - name: PROXY_HOST
+      value: ""
+    - name: PROXY_NON_PROXY_HOSTS
+      value: ""
+    - name: PROXY_PROTOCOL
+      value: http
+    - name: CONTEXT_DIR
+      value: .
+    runAfter:
+    - maven-test
+    taskRef:
+      kind: ClusterTask
+      name: maven
+    workspaces:
+    - name: source
+      workspace: workspace
+    - name: maven-settings
+      workspace: maven-settings
+  - name: software-composition-analysis
+    params:
+    - name: kn-image
+      value: registry.redhat.io/openshift-serverless-1/client-kn-rhel8@sha256:3fcf747549ad9a8957291f1e943316230112f2d87b2fcc050342f5c9a58889fc
+    - name: ARGS
+      value:
+      - help
+    runAfter:
+    - fetch-repository
+    taskRef:
+      kind: ClusterTask
+      name: kn
+  - name: sonarqube-scanner
+    params:
+    - name: SONAR_HOST_URL
+      value: http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000
+    - name: SONAR_PROJECT_KEY
+      value: backend
+    - name: PROJECT_VERSION
+      value: "1.0"
+    - name: SOURCE_TO_SCAN
+      value: ./target/classes
+    - name: SONAR_ORGANIZATION
+      value: default
+    - name: SONAR_SCANNER_IMAGE
+      value: docker.io/sonarsource/sonar-scanner-cli:4.6@sha256:7a976330a8bad1beca6584c1c118e946e7a25fdc5b664d5c0a869a6577d81b4f
+    - name: SONAR_LOGIN_KEY
+      value: login
+    - name: SONAR_PASSWORD_KEY
+      value: password
+    runAfter:
+    - maven-build
+    taskRef:
+      kind: Task
+      name: sonarqube-scanner
+    workspaces:
+    - name: source
+      workspace: workspace
+    - name: sonar-credentials
+      workspace: sonar-auth
+  - name: git-clone
+    params:
+    - name: url
+      value: $(params.GITOPS_REPO)
+    - name: revision
+      value: main
+    - name: refspec
+      value: ""
+    - name: submodules
+      value: "true"
+    - name: depth
+      value: "1"
+    - name: sslVerify
+      value: "true"
+    - name: crtFileName
+      value: ca-bundle.crt
+    - name: subdirectory
+      value: ""
+    - name: sparseCheckoutDirectories
+      value: ""
+    - name: deleteExisting
+      value: "true"
+    - name: httpProxy
+      value: ""
+    - name: httpsProxy
+      value: ""
+    - name: noProxy
+      value: ""
+    - name: verbose
+      value: "true"
+    - name: gitInitImage
+      value: registry.redhat.io/openshift-pipelines/pipelines-git-init-rhel8@sha256:16b8e98aa03a874dfc0fd16cd4aaaeea193dc60882c61653e768f8f503fe33e3
+    - name: userHome
+      value: /home/git
+    runAfter:
+    - image-build
+    taskRef:
+      kind: ClusterTask
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: gitops-workspace
+  - name: git-cli
+    params:
+    - name: BASE_IMAGE
+      value: cgr.dev/chainguard/git:root-2.39@sha256:7759f87050dd8bacabe61354d75ccd7f864d6b6f8ec42697db7159eccd491139
+    - name: GIT_USER_NAME
+      value: Automated Pipeline
+    - name: GIT_USER_EMAIL
+      value: automated@redhat.com
+    - name: GIT_SCRIPT
+      value: |-
+        git config --global --add safe.directory /workspace/source
+        git checkout main
+        git commit -am "Updated dev image tag to $(params.GIT_REV_SHORT)"
+        git push
+    - name: USER_HOME
+      value: /root
+    - name: VERBOSE
+      value: "true"
+    runAfter:
+    - yq
+    taskRef:
+      kind: ClusterTask
+      name: git-cli
+    workspaces:
+    - name: source
+      workspace: gitops-workspace
+    - name: ssh-directory
+      workspace: git-ssh
+  - name: yq
+    params:
+    - name: SCRIPT
+      value: yq -i '(.images[] | select(.name =="$(params.IMAGE_NAME)") | .newTag)
+        = "$(params.GIT_REV_SHORT)"' overlays/dev/kustomization.yaml
+    - name: image
+      value: docker.io/mikefarah/yq:4.27.5@sha256:2be3626ed633fbe1fc33ee9343a1256a6be53334412b2251b9a859f8c145bb53
+    - name: files
+      value: []
+    - name: expression
+      value: ""
+    runAfter:
+    - git-clone
+    taskRef:
+      kind: Task
+      name: yq
+    workspaces:
+    - name: source
+      workspace: gitops-workspace
+  workspaces:
+  - name: workspace
+  - name: maven-settings
+  - name: sonar-settings
+    optional: true
+  - name: sonar-auth
+  - name: quay-auth
+  - name: git-ssh
+  - name: gitops-workspace
